@@ -83,7 +83,9 @@ createApp({
       tickets.value.filter((t) => t.status === "已裁定")
     );
     const sealableTickets = computed(() =>
-      tickets.value.filter((t) => ["已裁定","已放行"].includes(t.status))
+      tickets.value.filter(
+        (t) => ["已裁定", "已放行"].includes(t.status) && t.gross_match === true
+      )
     );
 
     function fmtT(n) {

@@ -156,3 +156,7 @@ input:focus, select:focus, textarea:focus {
 .recon-ok { color: var(--ok); }
 .table-wrap { overflow-x: auto; max-width: 100%; }
 .harbor-main .panel + .panel { margin-top: 14px; }
+
+/* 毛重禁封：同页核销标注 */
+.badge.bad, .bad { color: var(--bad); }
+.panel .hint.bad { color: var(--bad); font-weight: 600; }

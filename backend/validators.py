@@ -44,6 +44,23 @@ def validate_bl_match(declared: float, gross: float, tolerance: float = 0.08) ->
     return abs(gross - declared) / declared <= tolerance
 
 
+def manifest_gross(manifest: str | None) -> float | None:
+    """从快照清单摘要取闸代读数毛重；缺失或不可解析返回 None。
+
+    纪要：闸代读数与提单申报毛重两边不得混用，故一律取清单内单一来源。
+    """
+    if not manifest:
+        return None
+    for part in manifest.split(";"):
+        part = part.strip()
+        if part.startswith("毛重=") and part.endswith("t"):
+            try:
+                return float(part[len("毛重="):-1])
+            except ValueError:
+                return None
+    return None
+
+
 def adjudicate_overload(gross: float, threshold: float) -> tuple[bool, float]:
     overweight = round(gross - threshold, 3)
     return overweight > 0, max(overweight, 0.0)

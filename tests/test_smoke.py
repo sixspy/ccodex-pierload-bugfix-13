@@ -34,6 +34,20 @@ def test_health_and_seed():
 def test_weigh_overload_gate_seal_flow():
     c = TestClient(app)
     h = _auth(c)
+    # 毛重禁封：须登记与过磅合计相符的提单（52t ↔ 52t），方可封闸。
+    assert (
+        c.post(
+            "/api/bl",
+            headers=h,
+            json={
+                "bl_code": "BL-2026-0199",
+                "cargo_desc": "流程验收卷板",
+                "declared_gross_t": 52.0,
+                "vessel_voyage": "验收轮/2802",
+            },
+        ).status_code
+        == 200
+    )
     lanes = c.get("/api/lanes", headers=h).json()["items"]
     lane = next(x for x in lanes if x["lane_code"] == "LN-N-01-IN")
     axles = [
@@ -47,7 +61,7 @@ def test_weigh_overload_gate_seal_flow():
         headers=h,
         json={
             "lane_id": lane["id"],
-            "bl_ref": "BL-2026-0101",
+            "bl_ref": "BL-2026-0199",
             "vehicle_plate": "测A·00001",
             "axle_weights": axles,
             "ticket_code": "WT-FLOW-001",

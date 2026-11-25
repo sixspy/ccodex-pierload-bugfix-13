@@ -1,7 +1,7 @@
 export const ticketsViewTemplate = `
 <section class="panel">
   <h2>过磅票采集</h2>
-  <p class="hint">录入各轴重 JSON；超重自动旁路挂起并开超重记录。</p>
+  <p class="hint">录入各轴重 JSON；超重自动旁路挂起并开超重记录。毛重与提单申报不符者不可封闸。</p>
   <div class="form-row">
     <div><label>车道</label>
       <select v-model.number="ticketForm.lane_id">
@@ -22,22 +22,31 @@ export const ticketsViewTemplate = `
     <button @click="createTicket">过磅入闸</button>
     <button class="secondary" @click="refresh">刷新</button>
   </div>
-  <table class="data-table">
-    <thead><tr><th>票号</th><th>车道</th><th>提单</th><th>毛重</th><th>状态</th><th>代</th><th></th></tr></thead>
-    <tbody>
-      <tr v-for="t in tickets" :key="t.id" @click="selectTicket(t)">
-        <td>{{ t.ticket_code }}</td>
-        <td>{{ t.lane_code }}</td>
-        <td>{{ t.bl_ref }}</td>
-        <td>{{ fmtT(t.gross_t) }}</td>
-        <td><span class="badge" :class="ticketClass(t.status)">{{ t.status }}</span></td>
-        <td>{{ t.generation }}</td>
-        <td><button class="mini-btn" @click.stop="loadTicketDetail(t.id)">详情</button></td>
-      </tr>
-    </tbody>
-  </table>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>票号</th><th>车道</th><th>提单</th><th>毛重</th><th>申报</th><th>核销</th><th>状态</th><th>代</th><th></th></tr></thead>
+      <tbody>
+        <tr v-for="t in tickets" :key="t.id" @click="selectTicket(t)">
+          <td>{{ t.ticket_code }}</td>
+          <td>{{ t.lane_code }}</td>
+          <td>{{ t.bl_ref }}</td>
+          <td>{{ fmtT(t.gross_t) }}</td>
+          <td>{{ fmtT(t.declared_gross_t) }}</td>
+          <td>
+            <span class="badge" :class="t.gross_match ? 'pass' : 'fail'">
+              {{ t.gross_match ? '毛重相符' : '毛重不符' }}
+            </span>
+          </td>
+          <td><span class="badge" :class="ticketClass(t.status)">{{ t.status }}</span></td>
+          <td>{{ t.generation }}</td>
+          <td><button class="mini-btn" @click.stop="loadTicketDetail(t.id)">详情</button></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
   <div v-if="ticketDetail" class="detail-box">
     <p>车牌 {{ ticketDetail.ticket.vehicle_plate }} · 超重挂起 {{ ticketDetail.overload_holds.length }} 条</p>
+    <p>毛重核销 <span :class="ticketDetail.ticket.gross_match ? 'recon-ok' : 'recon-warn'">{{ ticketDetail.ticket.gross_match ? '相符' : '不符（禁封）' }}</span></p>
   </div>
 </section>
 `;

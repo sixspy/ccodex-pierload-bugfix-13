@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 
 from auth import AuthHeader, require_user, require_writer
 from db import connect, now_iso, write_audit
-from locks import release, require_lock
+from locks import acquire_for_request, release_request
 from models import OverloadCloseIn, OverloadOpenIn
 from validators import adjudicate_overload, validate_ticket_mutable
 
@@ -32,7 +32,8 @@ def open_overload(body: OverloadOpenIn, authorization: AuthHeader = None):
     user = require_writer(authorization)
     lock_key = f"ticket:{body.ticket_id}"
     with connect() as conn:
-        require_lock(conn, lock_key, user)
+        holder = acquire_for_request(conn, lock_key, user)
+        ok = False
         try:
             ticket = conn.execute(
                 """SELECT t.*, l.overload_threshold_t FROM weigh_tickets t
@@ -81,6 +82,7 @@ def open_overload(body: OverloadOpenIn, authorization: AuthHeader = None):
                 {"hold_id": cur.lastrowid, "overweight_t": overweight},
             )
             conn.commit()
+            ok = True
             return {
                 "id": cur.lastrowid,
                 "hold_key": hold_key,
@@ -88,7 +90,9 @@ def open_overload(body: OverloadOpenIn, authorization: AuthHeader = None):
                 "status": "开放",
             }
         finally:
-            release(conn, lock_key, user)
+            if not ok:
+                conn.rollback()
+            release_request(conn, lock_key, holder)
 
 
 @router.post("/api/overloads/close")
@@ -103,7 +107,8 @@ def close_overload(body: OverloadCloseIn, authorization: AuthHeader = None):
         if hold["status"] != "开放":
             raise HTTPException(409, "挂起已关闭")
         lock_key = f"ticket:{hold['ticket_id']}"
-        require_lock(conn, lock_key, user)
+        holder = acquire_for_request(conn, lock_key, user)
+        ok = False
         try:
             now = now_iso()
             conn.execute(
@@ -124,6 +129,9 @@ def close_overload(body: OverloadCloseIn, authorization: AuthHeader = None):
                 )
             write_audit(conn, user, "overload_close", hold["hold_key"], {"note": body.note})
             conn.commit()
+            ok = True
             return {"ok": True, "hold_id": body.hold_id, "ticket_adjudicated": not open_left}
         finally:
-            release(conn, lock_key, user)
+            if not ok:
+                conn.rollback()
+            release_request(conn, lock_key, holder)

@@ -448,6 +448,10 @@ def init_db() -> None:
         seed_gate_samples(conn)
         seed_seals_sample(conn)
         seed_lineage_samples(conn)
+        # 启动回收陈旧锁：崩溃遗留的票锁不得把票永久钉死。
+        from locks import sweep_stale_locks
+
+        sweep_stale_locks(conn)
         conn.commit()
 
 

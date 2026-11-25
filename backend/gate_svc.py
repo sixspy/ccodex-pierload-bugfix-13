@@ -5,9 +5,13 @@ from fastapi import APIRouter, HTTPException
 
 from auth import AuthHeader, require_user, require_writer
 from db import connect, now_iso, write_audit
-from locks import release, require_lock
+from locks import acquire_for_request, release_request
 from models import GateReleaseIn
-from validators import validate_no_open_overload, validate_ticket_mutable
+from validators import (
+    validate_bl_match,
+    validate_no_open_overload,
+    validate_ticket_mutable,
+)
 
 router = APIRouter(tags=["gate"])
 
@@ -17,13 +21,24 @@ def list_releases(authorization: AuthHeader = None):
     require_user(authorization)
     with connect() as conn:
         rows = conn.execute(
-            """SELECT g.*, t.ticket_code, t.vehicle_plate, l.lane_code
+            """SELECT g.*, t.ticket_code, t.vehicle_plate, t.gross_t,
+                      m.declared_gross_t, l.lane_code
                FROM gate_releases g
                JOIN weigh_tickets t ON t.id=g.ticket_id
                JOIN weigh_lanes l ON l.id=g.lane_id
+               LEFT JOIN bl_manifests m ON m.bl_code=t.bl_ref
                ORDER BY g.id DESC"""
         ).fetchall()
-        return {"items": [dict(r) for r in rows]}
+        items = []
+        for r in rows:
+            d = dict(r)
+            declared = d.get("declared_gross_t")
+            d["gross_match"] = bool(
+                declared is not None
+                and validate_bl_match(float(declared), float(d["gross_t"]))
+            )
+            items.append(d)
+        return {"items": items}
 
 
 @router.post("/api/gate/release")
@@ -31,7 +46,8 @@ def release_gate(body: GateReleaseIn, authorization: AuthHeader = None):
     user = require_writer(authorization)
     lock_key = f"gate:{body.ticket_id}"
     with connect() as conn:
-        require_lock(conn, lock_key, user)
+        holder = acquire_for_request(conn, lock_key, user)
+        ok = False
         try:
             ticket = conn.execute(
                 """SELECT t.*, l.id lane_id FROM weigh_tickets t
@@ -78,10 +94,13 @@ def release_gate(body: GateReleaseIn, authorization: AuthHeader = None):
                 {"release_id": cur.lastrowid, "ticket_id": body.ticket_id},
             )
             conn.commit()
+            ok = True
             return {
                 "id": cur.lastrowid,
                 "release_ref": ref,
                 "status": "已放行",
             }
         finally:
-            release(conn, lock_key, user)
+            if not ok:
+                conn.rollback()
+            release_request(conn, lock_key, holder)

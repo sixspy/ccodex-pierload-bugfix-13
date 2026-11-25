@@ -7,12 +7,13 @@ from fastapi import APIRouter, HTTPException
 
 from auth import AuthHeader, require_user, require_writer
 from db import connect, now_iso, write_audit
-from locks import release, require_lock
+from locks import acquire_for_request, release_request
 from models import TicketIn
 from validators import (
     adjudicate_overload,
     validate_axle_count,
     validate_axle_weights,
+    validate_bl_match,
     validate_gross_cap,
     validate_lane_open,
 )
@@ -35,9 +36,11 @@ def _next_ticket_code(conn, lane_id: int) -> str:
 def list_tickets(authorization: AuthHeader = None, status: str | None = None):
     require_user(authorization)
     with connect() as conn:
-        q = """SELECT t.*, l.lane_code, b.bridge_code FROM weigh_tickets t
+        q = """SELECT t.*, l.lane_code, b.bridge_code, m.declared_gross_t
+               FROM weigh_tickets t
                JOIN weigh_lanes l ON l.id=t.lane_id
-               JOIN weigh_bridges b ON b.id=l.bridge_id"""
+               JOIN weigh_bridges b ON b.id=l.bridge_id
+               LEFT JOIN bl_manifests m ON m.bl_code=t.bl_ref"""
         if status:
             rows = conn.execute(
                 q + " WHERE t.status=? ORDER BY t.id DESC", (status,)
@@ -48,6 +51,16 @@ def list_tickets(authorization: AuthHeader = None, status: str | None = None):
         for r in rows:
             d = dict(r)
             d["axle_weights"] = json.loads(d["axle_weights"] or "[]")
+            declared = d.pop("declared_gross_t", None)
+            d["declared_gross_t"] = declared
+            d["gross_match"] = bool(
+                declared is not None
+                and validate_bl_match(float(declared), float(d["gross_t"]))
+            )
+            d["sealable"] = bool(
+                d["gross_match"]
+                and d["status"] not in ("已封闸", "作废", "旁路挂起")
+            )
             items.append(d)
         return {"items": items}
 
@@ -57,10 +70,12 @@ def get_ticket(ticket_id: int, authorization: AuthHeader = None):
     require_user(authorization)
     with connect() as conn:
         row = conn.execute(
-            """SELECT t.*, l.lane_code, l.overload_threshold_t, b.name bridge_name
+            """SELECT t.*, l.lane_code, l.overload_threshold_t, b.name bridge_name,
+                      m.declared_gross_t
                FROM weigh_tickets t
                JOIN weigh_lanes l ON l.id=t.lane_id
                JOIN weigh_bridges b ON b.id=l.bridge_id
+               LEFT JOIN bl_manifests m ON m.bl_code=t.bl_ref
                WHERE t.id=?""",
             (ticket_id,),
         ).fetchone()
@@ -68,6 +83,11 @@ def get_ticket(ticket_id: int, authorization: AuthHeader = None):
             raise HTTPException(404, "过磅票不存在")
         data = dict(row)
         data["axle_weights"] = json.loads(data["axle_weights"] or "[]")
+        declared = data.get("declared_gross_t")
+        data["gross_match"] = bool(
+            declared is not None
+            and validate_bl_match(float(declared), float(data["gross_t"]))
+        )
         holds = conn.execute(
             "SELECT * FROM overload_holds WHERE ticket_id=? ORDER BY id DESC",
             (ticket_id,),
@@ -93,7 +113,8 @@ def create_ticket(body: TicketIn, authorization: AuthHeader = None):
     user = require_writer(authorization)
     lock_key = f"lane:{body.lane_id}"
     with connect() as conn:
-        require_lock(conn, lock_key, user)
+        holder = acquire_for_request(conn, lock_key, user)
+        ok = False
         try:
             lane = conn.execute(
                 """SELECT l.*, b.max_gross_t, b.axle_limit FROM weigh_lanes l
@@ -171,6 +192,7 @@ def create_ticket(body: TicketIn, authorization: AuthHeader = None):
                 },
             )
             conn.commit()
+            ok = True
             return {
                 "id": ticket_id,
                 "ticket_code": code,
@@ -179,4 +201,6 @@ def create_ticket(body: TicketIn, authorization: AuthHeader = None):
                 "overload": is_over,
             }
         finally:
-            release(conn, lock_key, user)
+            if not ok:
+                conn.rollback()
+            release_request(conn, lock_key, holder)
